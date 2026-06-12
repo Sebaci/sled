@@ -1,0 +1,15 @@
+[package]
+name = "sled"
+version = "0.1.0"
+authors = ["Sebastian Cielemęcki <sc.gman@gmail.com>"]
+edition = "2018"
+
+[lib]
+name = "sled"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sled"
+path = "src/main.rs"
+
+[dependencies]
