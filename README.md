@@ -13,6 +13,12 @@ Run a one-line program against stdin:
 cargo run -- --expr 'input lines map len sum' < input.txt
 ```
 
+Short aliases are available for the highest-frequency transforms:
+
+```sh
+cargo run -- --expr 'input L m i sum' < input.txt
+```
+
 Or run a program file:
 
 ```sh

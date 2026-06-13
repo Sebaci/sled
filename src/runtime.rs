@@ -1,4 +1,4 @@
-use crate::analyzer::builtin_shape;
+use crate::analyzer::{builtin_shape, canonical_builtin_name};
 use crate::diagnostic::{Diagnostic, Result};
 use crate::parser::{Program, Term};
 
@@ -37,7 +37,9 @@ fn eval_terms(terms: &[Term], input: &str) -> Result<Value> {
     while index < terms.len() {
         match &terms[index] {
             Term::Ident(name) => {
-                let shape = builtin_shape(name)
+                let canonical_name = canonical_builtin_name(name)
+                    .ok_or_else(|| Diagnostic::new(format!("unknown builtin: {}", name)))?;
+                let shape = builtin_shape(canonical_name)
                     .ok_or_else(|| Diagnostic::new(format!("unknown builtin: {}", name)))?;
                 let mut args = Vec::new();
                 for arg in &terms[index + 1..index + 1 + shape.right_arity] {
@@ -64,7 +66,7 @@ fn eval_arg(term: &Term, input: &str) -> Result<Value> {
         Term::Int(value) => Ok(Value::Int(*value)),
         Term::Text(value) => Ok(Value::Text(value.clone())),
         Term::Ident(name) => {
-            if builtin_shape(name).is_some() {
+            if canonical_builtin_name(name).is_some() {
                 Ok(Value::Text(name.clone()))
             } else {
                 Err(Diagnostic::new(format!("unknown identifier: {}", name)))
@@ -75,7 +77,10 @@ fn eval_arg(term: &Term, input: &str) -> Result<Value> {
 }
 
 fn apply_builtin(name: &str, left: Option<Value>, args: Vec<Value>, input: &str) -> Result<Value> {
-    match name {
+    let canonical_name = canonical_builtin_name(name)
+        .ok_or_else(|| Diagnostic::new(format!("unknown builtin: {}", name)))?;
+
+    match canonical_name {
         "input" => Ok(Value::Text(input.to_string())),
         "lines" => match expect_left(name, left)? {
             Value::Text(text) => Ok(Value::List(
@@ -84,6 +89,29 @@ fn apply_builtin(name: &str, left: Option<Value>, args: Vec<Value>, input: &str)
                     .collect(),
             )),
             _ => Err(Diagnostic::new("lines expects text")),
+        },
+        "words" => match expect_left(name, left)? {
+            Value::Text(text) => Ok(Value::List(
+                text.split_whitespace()
+                    .map(|word| Value::Text(word.to_string()))
+                    .collect(),
+            )),
+            _ => Err(Diagnostic::new("words expects text")),
+        },
+        "chars" => match expect_left(name, left)? {
+            Value::Text(text) => Ok(Value::List(
+                text.chars().map(|ch| Value::Text(ch.to_string())).collect(),
+            )),
+            _ => Err(Diagnostic::new("chars expects text")),
+        },
+        "int" => match expect_left(name, left)? {
+            Value::Text(text) => text
+                .trim()
+                .parse()
+                .map(Value::Int)
+                .map_err(|_| Diagnostic::new(format!("int could not parse: {}", text))),
+            Value::Int(value) => Ok(Value::Int(value)),
+            Value::List(_) => Err(Diagnostic::new("int expects text")),
         },
         "split" => {
             let sep = expect_text_arg(name, &args, 0)?;
@@ -123,6 +151,27 @@ fn apply_builtin(name: &str, left: Option<Value>, args: Vec<Value>, input: &str)
                     .collect::<Result<Vec<_>>>()
                     .map(Value::List),
                 _ => Err(Diagnostic::new("map expects a list")),
+            }
+        }
+        "window" => {
+            let size = expect_int_arg(name, &args, 0)?;
+            if size <= 0 {
+                return Err(Diagnostic::new("window size must be positive"));
+            }
+            match expect_left(name, left)? {
+                Value::List(values) => {
+                    let size = size as usize;
+                    if size > values.len() {
+                        return Ok(Value::List(Vec::new()));
+                    }
+                    Ok(Value::List(
+                        values
+                            .windows(size)
+                            .map(|window| Value::List(window.to_vec()))
+                            .collect(),
+                    ))
+                }
+                _ => Err(Diagnostic::new("window expects a list")),
             }
         }
         "range" => {
@@ -172,7 +221,7 @@ mod tests {
     #[test]
     fn evaluates_line_lengths() {
         assert_eq!(
-            run("input lines map len sum", "abc\nde\n").unwrap(),
+            run("input L m len sum", "abc\nde\n").unwrap(),
             Value::Int(5)
         );
     }
@@ -180,5 +229,32 @@ mod tests {
     #[test]
     fn evaluates_grouped_range() {
         assert_eq!(run("range 1 3 sum", "").unwrap(), Value::Int(6));
+    }
+
+    #[test]
+    fn evaluates_words_chars_and_int_aliases() {
+        assert_eq!(run("input W len", "1 22 333").unwrap(), Value::Int(3));
+        assert_eq!(run("input C len", "abc").unwrap(), Value::Int(3));
+        assert_eq!(run("input L m i sum", "1\n2\n3\n").unwrap(), Value::Int(6));
+    }
+
+    #[test]
+    fn evaluates_windows() {
+        assert_eq!(
+            run("range 1 4 win 2", "").unwrap(),
+            Value::List(vec![
+                Value::List(vec![Value::Int(1), Value::Int(2)]),
+                Value::List(vec![Value::Int(2), Value::Int(3)]),
+                Value::List(vec![Value::Int(3), Value::Int(4)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_non_positive_window_size() {
+        assert_eq!(
+            run("range 1 4 win 0", "").unwrap_err().message,
+            "window size must be positive"
+        );
     }
 }

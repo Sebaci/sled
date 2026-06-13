@@ -21,7 +21,9 @@ fn analyze_terms(terms: &[Term]) -> Result<()> {
     while index < terms.len() {
         match &terms[index] {
             Term::Ident(name) => {
-                let shape = builtin_shape(name)
+                let canonical_name = canonical_builtin_name(name)
+                    .ok_or_else(|| Diagnostic::new(format!("unknown builtin: {}", name)))?;
+                let shape = builtin_shape(canonical_name)
                     .ok_or_else(|| Diagnostic::new(format!("unknown builtin: {}", name)))?;
                 if shape.needs_left && !has_value {
                     return Err(Diagnostic::new(format!(
@@ -40,7 +42,7 @@ fn analyze_terms(terms: &[Term]) -> Result<()> {
                         analyze_terms(grouped)?;
                     }
                 }
-                if name == "map" {
+                if canonical_name == "map" {
                     analyze_map_transform(&terms[index + 1])?;
                 }
                 has_value = true;
@@ -65,7 +67,9 @@ fn analyze_terms(terms: &[Term]) -> Result<()> {
 fn analyze_map_transform(term: &Term) -> Result<()> {
     match term {
         Term::Ident(name) => {
-            let shape = builtin_shape(name)
+            let canonical_name = canonical_builtin_name(name)
+                .ok_or_else(|| Diagnostic::new(format!("unknown builtin: {}", name)))?;
+            let shape = builtin_shape(canonical_name)
                 .ok_or_else(|| Diagnostic::new(format!("unknown builtin: {}", name)))?;
             if shape.needs_left && shape.right_arity == 0 {
                 Ok(())
@@ -82,17 +86,35 @@ fn analyze_map_transform(term: &Term) -> Result<()> {
     }
 }
 
+pub fn canonical_builtin_name(name: &str) -> Option<&'static str> {
+    let canonical = match name {
+        "input" => "input",
+        "lines" | "L" => "lines",
+        "words" | "W" => "words",
+        "chars" | "C" => "chars",
+        "int" | "i" => "int",
+        "len" => "len",
+        "sum" => "sum",
+        "split" | "sp" => "split",
+        "map" | "m" => "map",
+        "window" | "win" => "window",
+        "range" => "range",
+        _ => return None,
+    };
+    Some(canonical)
+}
+
 pub fn builtin_shape(name: &str) -> Option<CallableShape> {
     let shape = match name {
         "input" => CallableShape {
             needs_left: false,
             right_arity: 0,
         },
-        "lines" | "len" | "sum" => CallableShape {
+        "lines" | "words" | "chars" | "int" | "len" | "sum" => CallableShape {
             needs_left: true,
             right_arity: 0,
         },
-        "split" | "map" => CallableShape {
+        "split" | "map" | "window" => CallableShape {
             needs_left: true,
             right_arity: 1,
         },
@@ -121,16 +143,24 @@ mod tests {
 
     #[test]
     fn accepts_input_pipeline() {
-        let program = parse(&lex("input lines map len sum").unwrap()).unwrap();
+        let program = parse(&lex("input L m len sum").unwrap()).unwrap();
         analyze(&program).unwrap();
     }
 
     #[test]
     fn reports_incomplete_map_transform() {
-        let program = parse(&lex("input lines map split").unwrap()).unwrap();
+        let program = parse(&lex("input L m sp").unwrap()).unwrap();
         assert_eq!(
             analyze(&program).unwrap_err().message,
-            "map expects a complete transform, but split needs 1 right-hand argument(s)"
+            "map expects a complete transform, but sp needs 1 right-hand argument(s)"
         );
+    }
+
+    #[test]
+    fn resolves_builtin_aliases() {
+        assert_eq!(canonical_builtin_name("L"), Some("lines"));
+        assert_eq!(canonical_builtin_name("m"), Some("map"));
+        assert_eq!(canonical_builtin_name("i"), Some("int"));
+        assert_eq!(canonical_builtin_name("win"), Some("window"));
     }
 }
