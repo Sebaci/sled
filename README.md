@@ -19,6 +19,12 @@ Short aliases are available for the highest-frequency transforms:
 cargo run -- --expr 'input L m i sum' < input.txt
 ```
 
+Grouped operator sections can be passed to higher-order transforms:
+
+```sh
+cargo run -- --expr 'input L m i f (> 0) sum' < input.txt
+```
+
 Or run a program file:
 
 ```sh

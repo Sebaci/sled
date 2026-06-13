@@ -37,13 +37,14 @@ fn analyze_terms(terms: &[Term]) -> Result<()> {
                         name, shape.right_arity
                     )));
                 }
-                for arg in &terms[index + 1..index + 1 + shape.right_arity] {
-                    if let Term::Group(grouped) = arg {
-                        analyze_terms(grouped)?;
+                if canonical_name == "map" || canonical_name == "filter" {
+                    analyze_transform_arg(canonical_name, &terms[index + 1])?;
+                } else {
+                    for arg in &terms[index + 1..index + 1 + shape.right_arity] {
+                        if let Term::Group(grouped) = arg {
+                            analyze_terms(grouped)?;
+                        }
                     }
-                }
-                if canonical_name == "map" {
-                    analyze_map_transform(&terms[index + 1])?;
                 }
                 has_value = true;
                 index += 1 + shape.right_arity;
@@ -64,7 +65,7 @@ fn analyze_terms(terms: &[Term]) -> Result<()> {
     Ok(())
 }
 
-fn analyze_map_transform(term: &Term) -> Result<()> {
+fn analyze_transform_arg(operator: &str, term: &Term) -> Result<()> {
     match term {
         Term::Ident(name) => {
             let canonical_name = canonical_builtin_name(name)
@@ -75,15 +76,54 @@ fn analyze_map_transform(term: &Term) -> Result<()> {
                 Ok(())
             } else {
                 Err(Diagnostic::new(format!(
-                    "map expects a complete transform, but {} needs {} right-hand argument(s)",
-                    name, shape.right_arity
+                    "{} expects a complete transform, but {} needs {} right-hand argument(s)",
+                    operator, name, shape.right_arity
                 )))
             }
         }
-        _ => Err(Diagnostic::new(
-            "map currently expects a builtin transform name",
-        )),
+        Term::Group(terms) => analyze_grouped_transform_arg(operator, terms),
+        _ => Err(Diagnostic::new(format!(
+            "{} expects a builtin transform",
+            operator
+        ))),
     }
+}
+
+fn analyze_grouped_transform_arg(operator: &str, terms: &[Term]) -> Result<()> {
+    let name = match terms.first() {
+        Some(Term::Ident(name)) => name,
+        _ => {
+            return Err(Diagnostic::new(format!(
+                "{} expects a grouped builtin transform",
+                operator
+            )));
+        }
+    };
+
+    let canonical_name = canonical_builtin_name(name)
+        .ok_or_else(|| Diagnostic::new(format!("unknown builtin: {}", name)))?;
+    let shape = builtin_shape(canonical_name)
+        .ok_or_else(|| Diagnostic::new(format!("unknown builtin: {}", name)))?;
+    if !shape.needs_left {
+        return Err(Diagnostic::new(format!(
+            "{} expects a transform, but {} is a producer",
+            operator, name
+        )));
+    }
+    if terms.len() != shape.right_arity + 1 {
+        return Err(Diagnostic::new(format!(
+            "{} expects a complete transform, but {} needs {} right-hand argument(s)",
+            operator, name, shape.right_arity
+        )));
+    }
+
+    for arg in &terms[1..] {
+        if let Term::Group(grouped) = arg {
+            analyze_terms(grouped)?;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn canonical_builtin_name(name: &str) -> Option<&'static str> {
@@ -97,8 +137,15 @@ pub fn canonical_builtin_name(name: &str) -> Option<&'static str> {
         "sum" => "sum",
         "split" | "sp" => "split",
         "map" | "m" => "map",
+        "filter" | "f" => "filter",
         "window" | "win" => "window",
         "range" => "range",
+        ">" => ">",
+        "<" => "<",
+        ">=" => ">=",
+        "<=" => "<=",
+        "=" => "=",
+        "!=" => "!=",
         _ => return None,
     };
     Some(canonical)
@@ -114,10 +161,12 @@ pub fn builtin_shape(name: &str) -> Option<CallableShape> {
             needs_left: true,
             right_arity: 0,
         },
-        "split" | "map" | "window" => CallableShape {
-            needs_left: true,
-            right_arity: 1,
-        },
+        "split" | "map" | "filter" | "window" | ">" | "<" | ">=" | "<=" | "=" | "!=" => {
+            CallableShape {
+                needs_left: true,
+                right_arity: 1,
+            }
+        }
         "range" => CallableShape {
             needs_left: false,
             right_arity: 2,
@@ -161,6 +210,22 @@ mod tests {
         assert_eq!(canonical_builtin_name("L"), Some("lines"));
         assert_eq!(canonical_builtin_name("m"), Some("map"));
         assert_eq!(canonical_builtin_name("i"), Some("int"));
+        assert_eq!(canonical_builtin_name("f"), Some("filter"));
         assert_eq!(canonical_builtin_name("win"), Some("window"));
+    }
+
+    #[test]
+    fn accepts_grouped_section_transform() {
+        let program = parse(&lex("input L m i f (> 0) len").unwrap()).unwrap();
+        analyze(&program).unwrap();
+    }
+
+    #[test]
+    fn reports_incomplete_filter_transform() {
+        let program = parse(&lex("input L f (> )").unwrap()).unwrap();
+        assert_eq!(
+            analyze(&program).unwrap_err().message,
+            "filter expects a complete transform, but > needs 1 right-hand argument(s)"
+        );
     }
 }
